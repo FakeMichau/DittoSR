@@ -19,8 +19,10 @@ Copy-Item $loader $stage
 foreach ($f in "install.ps1", "uninstall.ps1", "install.sh", "uninstall.sh", "bench.ps1") { Copy-Item (Join-Path $root "scripts\$f") (Join-Path $stage "scripts") }
 foreach ($f in "dittosr.ini", "README.md", "LICENSE", "THIRD-PARTY-NOTICES.md") { Copy-Item (Join-Path $root $f) $stage }
 Copy-Item (Join-Path $root "licenses\*") (Join-Path $stage "licenses")
-New-Item -ItemType Directory -Force (Join-Path $stage "licenses\ffx_api") | Out-Null
-Copy-Item (Join-Path $root "src\ffx_api\LICENSE.txt") (Join-Path $stage "licenses\ffx_api\LICENSE.txt")
+foreach ($d in "ffx_api", "optiscaler") {  # (the MIT headers compiled in: their notices beside the binaries)
+    New-Item -ItemType Directory -Force (Join-Path $stage "licenses\$d") | Out-Null
+    Copy-Item (Join-Path $root "src\$d\LICENSE.txt") (Join-Path $stage "licenses\$d\LICENSE.txt")
+}
 $zip = Join-Path $build "DittoSR.zip"
 if (Test-Path $zip) { Remove-Item $zip }
 # (not Compress-Archive: Windows PowerShell 5.1's stores the paths with backslashes, which Linux's extractors - SteamOS's
