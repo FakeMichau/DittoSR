@@ -29,7 +29,8 @@
 //     out=1440x810    the output size (the render: out / ratio); psnr=0: the GPU time alone (no reference, no PNGs)
 //     api=dx12        or vk: the upscaler on Vulkan (dll=amd_fidelityfx_vk.dll) - a device with no extension and no
 //                     optional feature, as the least a game may hand over; gpu= its physical device's index
-//     outfmt=rgba16f  or rgba8: the output's format (the Vulkan passes are compiled per output format)
+//     outfmt=rgba16f  or rgba8: the output's format (the Vulkan passes are compiled per output format); r11g11b10 (D3D12
+//                     only): R11G11B10_FLOAT, as many D3D12 games hand FSR theirs
 // Reported: the upscale's GPU time (timestamps either side of its dispatch, the median); PSNR against the scene
 // supersampled 4x4 at output size (in a perceptual domain: sqrt of Reinhard), at the
 // middle and last frames, PNGs of both; with an integer pan (grass), the shimmer - the mean difference between frame t
@@ -66,6 +67,7 @@ struct ffxCreateBackendDX12Desc {
 static uint32_t OW = 1440, OH = 810;  // (out=)
 static uint32_t RW = 960, RH = 540;
 static bool g_grass, g_glints;
+static bool g_out11;  // (outfmt=r11g11b10: the output R11G11B10_FLOAT, as many D3D12 games hand FSR theirs)
 static float g_vel = 3.0f, g_dense = 1.0f, g_blur = 0.0f, g_mvs = 1.0f, g_radiance = 1.0f;
 static int g_wobble = 0, g_light = 0, g_sky = 0, g_spec = 0;
 static int g_stop = 0;  // (stop=: the pan stops after this frame - how fast the image gets sharp again)
@@ -355,7 +357,15 @@ enum Kind { K_COLOR, K_DEPTH, K_MV, K_OUT };
 static uint32_t ffx_format(Kind k, bool out8) {
     return k == K_COLOR ? FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT : k == K_DEPTH ? FFX_API_SURFACE_FORMAT_R32_FLOAT
            : k == K_MV ? FFX_API_SURFACE_FORMAT_R16G16_FLOAT : out8 ? FFX_API_SURFACE_FORMAT_R8G8B8A8_UNORM
-                                                                     : FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT;
+           : g_out11 ? FFX_API_SURFACE_FORMAT_R11G11B10_FLOAT : FFX_API_SURFACE_FORMAT_R16G16B16A16_FLOAT;
+}
+
+// an unsigned small float of R11G11B10 (5 exponent bits, bias 15, mbits of mantissa)
+static float uf_decode(uint32_t v, int mbits) {
+    uint32_t e = v >> mbits, m = v & ((1u << mbits) - 1);
+    if (e == 31) return m ? NAN : INFINITY;
+    if (e == 0) return ldexpf((float)m, -14 - mbits);
+    return ldexpf(1.0f + (float)m / (float)(1u << mbits), (int)e - 15);
 }
 struct Tex {
     void *r = nullptr;
@@ -445,7 +455,8 @@ struct Dx12 : Api {
         Tex t;
         t.k = k, t.w = w, t.h = h, t.out8 = out8;
         DXGI_FORMAT f = k == K_COLOR ? DXGI_FORMAT_R16G16B16A16_FLOAT : k == K_DEPTH ? DXGI_FORMAT_R32_TYPELESS
-                        : k == K_MV ? DXGI_FORMAT_R16G16_FLOAT : out8 ? DXGI_FORMAT_R8G8B8A8_UNORM : DXGI_FORMAT_R16G16B16A16_FLOAT;
+                        : k == K_MV ? DXGI_FORMAT_R16G16_FLOAT : out8 ? DXGI_FORMAT_R8G8B8A8_UNORM
+                        : g_out11 ? DXGI_FORMAT_R11G11B10_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT;
         ID3D12Resource *r = tex(g, w, h, f, k == K_OUT, k == K_OUT ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_COPY_DEST);
         t.r = r;
         if (k == K_OUT) {
@@ -747,6 +758,8 @@ int main(int argc, char **argv) {
     const char *dir = argv[1], *prefix = argv[2];
     bool vk = !strcmp(opt(argc, argv, "api", "dx12"), "vk");
     bool out8 = !strcmp(opt(argc, argv, "outfmt", "rgba16f"), "rgba8");
+    g_out11 = !strcmp(opt(argc, argv, "outfmt", "rgba16f"), "r11g11b10");
+    if (g_out11 && vk) return printf("outfmt=r11g11b10: D3D12 only\n"), 1;
     const char *dll = opt(argc, argv, "dll", vk ? "amd_fidelityfx_vk.dll" : "amd_fidelityfx_dx12.dll");
     int frames = atoi(opt(argc, argv, "frames", "64"));
     sscanf(opt(argc, argv, "out", "1440x810"), "%ux%u", &OW, &OH);
@@ -915,7 +928,10 @@ int main(int argc, char **argv) {
             const uint8_t *row8 = mp + (size_t)y * pitch;
             for (uint32_t x = 0; x < OW; x++)
                 for (int c = 0; c < 3; c++) {
-                    float v = (out8 ? row8[x * 4 + c] / 255.0f : h2f(row[x * 4 + c])) / g_radiance;
+                    uint32_t p11 = g_out11 ? ((const uint32_t *)row8)[x] : 0;
+                    float v = (out8 ? row8[x * 4 + c] / 255.0f
+                               : g_out11 ? uf_decode(c == 2 ? p11 >> 22 : (p11 >> (11 * c)) & 0x7ff, c == 2 ? 5 : 6)
+                                         : h2f(row[x * 4 + c])) / g_radiance;
                     if (!(v == v) || v > 1e30f) v = -1.0f;  // (NaN or infinite: counted as black, as a tonemapper shows it)
                     cur[((size_t)y * OW + x) * 3 + c] = perceptual(v), curLin[((size_t)y * OW + x) * 3 + c] = v;
                 }

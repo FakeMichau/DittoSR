@@ -129,6 +129,10 @@ private:
     ID3D12PipelineState *psoUpscaleAs_ = nullptr, *psoUpscaleAs16_ = nullptr;  // (the anti-shimmer variants)
     bool lastFp16_ = false;
     bool hdrFromFormat_ = false;  // (logged: a float colour without the HDR flag)
+    // the game's output last checked (outputWritable): its format, whether it allows unordered access, and the verdict
+    DXGI_FORMAT outFmt_ = DXGI_FORMAT_UNKNOWN;
+    bool outUav_ = false, outOk_ = false;
+    bool outputWritable(const D3D12_RESOURCE_DESC &od);
     bool amd_ = false;  // (the device's vendor is AMD: fp16 = -1 picks the FP16 shaders)
     ID3D12DescriptorHeap *heap_ = nullptr;
     uint32_t heapSize_ = 0, heapNext_ = 0, descInc_ = 0;

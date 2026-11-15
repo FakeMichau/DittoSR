@@ -231,6 +231,15 @@ bool DittoSR::createPipelines() {
         fac->Release();
     }
     ditto_log("FP16 shaders: %s\n", psoUpscale16_ ? "available" : native16 ? "failed, FP32" : "no native 16-bit math on this GPU, FP32");
+    // (the textures DittoSR writes as UAVs: typed stores to them are required at feature level 11_0 - a driver that
+    // reports otherwise is logged, for a report from hardware we can't test on)
+    for (DXGI_FORMAT f : {DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8_UNORM,
+                          DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R16_FLOAT, DXGI_FORMAT_R32_FLOAT}) {
+        D3D12_FEATURE_DATA_FORMAT_SUPPORT fs = {f};
+        if (FAILED(dev_->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fs, sizeof fs)) ||
+            !(fs.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE))
+            ditto_log("format dxgi %d: typed UAV stores not reported supported\n", (int)f);
+    }
     heapSize_ = kTable * kTablesPerFrame * kFramesInRing;
     D3D12_DESCRIPTOR_HEAP_DESC hd = {};
     hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, hd.NumDescriptors = heapSize_;
@@ -280,6 +289,24 @@ bool DittoSR::ensureTextures(uint32_t rw, uint32_t rh, uint32_t ow, uint32_t oh,
     texValid_ = true;
     ditto_log("textures: render %ux%u, output %ux%u, history %s\n", rw, rh, ow, oh, hf == DXGI_FORMAT_R10G10B10A2_UNORM ? "RGB10A2" : "RGBA16F");
     return true;
+}
+
+// The game's output takes DittoSR's result as a typed UAV store in its own format: it must allow unordered access, and
+// the driver must take typed stores in that format (required at feature level 11_0 for the formats games hand FSR, so
+// both should hold - a report of black output on Polaris, its output R11G11B10_FLOAT, asked). Checked and logged once
+// per format; false: not written blind - DittoSR steps aside (the game's FSR instead, where there is one).
+bool DittoSR::outputWritable(const D3D12_RESOURCE_DESC &od) {
+    bool uav = (od.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0;
+    if (od.Format == outFmt_ && uav == outUav_) return outOk_;
+    outFmt_ = od.Format, outUav_ = uav;
+    D3D12_FEATURE_DATA_FORMAT_SUPPORT fs = {view_format(od.Format, true)};
+    bool store = SUCCEEDED(dev_->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &fs, sizeof fs)) &&
+                 (fs.Support1 & D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW) && (fs.Support2 & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE);
+    outOk_ = uav && store;
+    ditto_log("output: dxgi %d, %s, typed UAV stores %s%s\n", (int)od.Format,
+              uav ? "unordered access allowed" : "NOT created for unordered access", store ? "supported" : "NOT reported supported",
+              outOk_ ? "" : " - DittoSR does not write it");
+    return outOk_;
 }
 
 void DittoSR::transition(ID3D12GraphicsCommandList *cl, Tex &t, D3D12_RESOURCE_STATES to) {
@@ -356,6 +383,7 @@ bool DittoSR::dispatch(const DittoFrame &fr, bool forceReset) {
     // (no depth - an API that leaves it out: the convert pass reads 0 everywhere: the centre's motion, no disocclusion)
     D3D12_RESOURCE_DESC cd = color->GetDesc(), dd = depth ? depth->GetDesc() : D3D12_RESOURCE_DESC{}, md = mv->GetDesc(), od = out->GetDesc();
     uint32_t rw = fr.rw, rh = fr.rh, ow = fr.ow, oh = fr.oh;
+    if (!outputWritable(od)) return false;
     DXGI_FORMAT hfmt = s_.history10 ? DXGI_FORMAT_R10G10B10A2_UNORM : DXGI_FORMAT_R16G16B16A16_FLOAT;
     // (the stability levels R8, or R8G8 with the anti-shimmer's state)
     DXGI_FORMAT sfmt = s_.antiShimmer != 0.0f ? DXGI_FORMAT_R8G8_UNORM : DXGI_FORMAT_R8_UNORM;
