@@ -34,12 +34,17 @@ anything is replaced.
 
 OptiScaler v10 (recent nightly builds) loads custom FidelityFX providers. The loader finds it (and its version) when
 scanning the game: an **OptiScaler** button appears before FSR and XeSS, and installs DittoSR as its custom provider
-(DirectX 12 and Vulkan) without touching the game's files. By hand, copy `build\amd_fidelityfx_dx12.dll` from the zip
-into OptiScaler's own folder (the `OptiScaler` folder next to the game's executable, if there is one) as:
+(DirectX 12 and Vulkan) without touching the game's files. By hand, copy `build\amd_fidelityfx_dx12.dll` and
+`build\amd_fidelityfx_vk.dll` from the zip into OptiScaler's own folder (the `OptiScaler` folder next to the game's
+executable, if there is one) as:
 
 ```
 custom\DittoSR\ffx\amd_fidelityfx_dx12.dll
+custom\DittoSR\ffx_vk\amd_fidelityfx_vk.dll
 ```
+
+The first serves DirectX 12 games, the second Vulkan ones (Enshrouded, No Man's Sky): OptiScaler looks for each in its
+own folder.
 
 DittoSR then shows up in OptiScaler's upscaler list. A `dittosr.ini` in the same folder is optional (the defaults apply without it).
 OptiScaler's settings drive it:
@@ -50,11 +55,12 @@ OptiScaler's settings drive it:
   **Velocity Factor** below 1 is steadier (weight 2 x it), and at 1 the **Reactive Scale** below 1 more responsive
   (up to 4).
 - A **DittoSR** tab in OptiScaler's menu (OptiScaler builds with the plugin API) holds the rest: the
-  **frame weight** (shown as the presets set it; with **Override** ticked, the slider's wins over them), the
+  **frame weight** (shown as the presets set it; at **Default**, or with **Override** ticked, the slider's), the
   **anti-shimmer**, the **motion detail**, the **debug views** and the **indicator**. They are kept in
-  `OptiScaler.ini`'s `[Plugin.DittoSR]` section, under the ini's key names (`frame_weight`, `frame_weight_override`,
-  `anti_shimmer`, `history_sharpen`, `debug_view`, `indicator`), and win over `dittosr.ini`'s;
-  **Save** in the tab (or OptiScaler's Save INI) writes them, **Defaults** removes them.
+  `OptiScaler.ini`'s `[Plugin.DittoSR]` section, under the ini's key names (`frame_weight`, `anti_shimmer`,
+  `history_sharpen`, `debug_view`, `indicator`; plus `frame_weight_override`, the tab's own), and win over
+  `dittosr.ini`'s. **Save** in the tab (or OptiScaler's Save INI) writes them, and so does the F7 menu's **Save** for
+  the ones the tab holds; **Defaults** removes them.
 
 ### With the scripts
 

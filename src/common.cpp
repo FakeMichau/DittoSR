@@ -44,9 +44,14 @@ static float ini_float(const char *ini, const char *key, float def) {
     return (float)atof(b);
 }
 
+void (*g_settingsOverride)(DittoSettings &s);
+bool (*g_settingsSave)(const DittoSettings &s, const char *key);
+
 // dittosr.ini: [dittosr] enabled, sharpness, frame_weight (F9 reads them again); [debug] enabled (F10, the log in
 // full), indicator. Every other key - the reconstruction's knobs, the performance switches, the debug views - is still
 // read from [dittosr] when present, for tuning, but the shipped file leaves them out (README.md, "Advanced keys").
+// The override (OptiScaler's [Plugin.<name>]) then goes over the file's values, and the result is stored at once: a
+// menu's change made meanwhile is not lost between the two.
 static void load_config() {
     char ini[MAX_PATH];
     snprintf(ini, sizeof ini, "%sdittosr.ini", g_dir);
@@ -59,9 +64,7 @@ static void load_config() {
     GetPrivateProfileStringA("dittosr", "reload_key", "0x78", b, sizeof b, ini);
     c.reloadKey = (int)strtol(b, nullptr, 0);  // (always: the values tuned live)
     c.logDispatches = GetPrivateProfileIntA("dittosr", "log_dispatches", c.debug ? 3 : 0, ini);
-    std::lock_guard<std::mutex> lk(g_sMu);
-    DittoSettings &s = c.s;
-    s = DittoSettings();
+    DittoSettings s;
     s.frameWeight = ini_float(ini, "frame_weight", s.frameWeight);
     s.alphaRest = ini_float(ini, "alpha_rest", s.alphaRest);
     s.conf = ini_float(ini, "conf", s.conf);
@@ -104,6 +107,11 @@ static void load_config() {
     s.indicator = GetPrivateProfileIntA("debug", "indicator", GetPrivateProfileIntA("dittosr", "indicator", 0, ini), ini) != 0;
     // (debug_view: 1 the motion, 2 the new frame's share, 3 the stability level, 4 clip / cut / confidence)
     s.debugView = GetPrivateProfileIntA("dittosr", "debug_view", 0, ini);
+    if (g_settingsOverride) g_settingsOverride(s);  // (outside the settings' lock: it calls into OptiScaler)
+    {
+        std::lock_guard<std::mutex> lk(g_sMu);
+        c.s = s;
+    }
     ditto_log("config: enabled %d, debug %d, sharpness %g, frame_weight %g, auto_reactive %g, ratios %g %g %g %g\n", c.enabled,
               c.debug, s.sharpness, s.frameWeight, s.autoReactive, c.ratio[0], c.ratio[1], c.ratio[2], c.ratio[3]);
     if (!c.debug) return;
@@ -115,24 +123,12 @@ static void load_config() {
               s.motionMinMax, s.sharpness);
 }
 
-void (*g_settingsOverride)(DittoSettings &s);
-
-// dittosr.ini, then the override over it (outside the settings' lock: it calls into OptiScaler)
-static void reload_config() {
-    load_config();
-    if (!g_settingsOverride) return;
-    DittoSettings s = ditto_settings();
-    g_settingsOverride(s);
-    std::lock_guard<std::mutex> lk(g_sMu);
-    g_cfg.s = s;
-}
-
 bool ditto_poll_reload() {
     static bool down;
     bool now = g_cfg.reloadKey && (GetAsyncKeyState(g_cfg.reloadKey) & 0x8000);
     bool pressed = (now && !down) || InterlockedExchange(&g_reqReload, 0);
     down = now;
-    if (pressed) ditto_log("reload: dittosr.ini\n"), reload_config();
+    if (pressed) ditto_log("reload: dittosr.ini\n"), load_config();
     return pressed || InterlockedExchange(&g_menuChanged, 0);
 }
 
@@ -152,12 +148,16 @@ void ditto_set_settings(const DittoSettings &s) {
 void ditto_request_reload() { InterlockedExchange(&g_reqReload, 1); }
 
 // The menu's Save: each setting it shows into [dittosr] - sharpness and frame_weight always (the shipped file's), the
-// others only when they differ from the defaults (removed when back at them: the file keeps its shipped keys alone)
+// others only when they differ from the defaults (removed when back at them: the file keeps its shipped keys alone).
+// A setting the override holds (OptiScaler's [Plugin.<name>]) is saved there instead, dittosr.ini's value left as it was
+// - else the two would hold the same value and the plugin tab's Defaults would bring nothing back.
 bool ditto_save_settings() {
     char ini[MAX_PATH];
     snprintf(ini, sizeof ini, "%sdittosr.ini", g_dir);
     DittoSettings s = ditto_settings(), d;
+    auto held = [&](const char *key) { return g_settingsSave && g_settingsSave(s, key); };
     auto put = [&](const char *key, float v, float def, bool always) {
+        if (held(key)) return true;
         char b[32];
         snprintf(b, sizeof b, "%g", v);
         bool keep = always || v != def;
@@ -169,7 +169,8 @@ bool ditto_save_settings() {
     ok = put("history_sharpen", s.historySharpen, d.historySharpen, false) && ok;
     ok = put("auto_reactive", s.autoReactive, d.autoReactive, false) && ok;
     ok = put("debug_view", (float)s.debugView, (float)d.debugView, false) && ok;
-    ok = WritePrivateProfileStringA("debug", "indicator", s.indicator ? "1" : "0", ini) != 0 && ok;
+    if (!held("indicator")) ok = WritePrivateProfileStringA("debug", "indicator", s.indicator ? "1" : "0", ini) != 0 && ok;
+    if (g_settingsSave) ok = g_settingsSave(s, nullptr) && ok;  // (what the override took, written out)
     ditto_log("menu: settings saved to dittosr.ini%s\n", ok ? "" : " (failed)");
     return ok;
 }

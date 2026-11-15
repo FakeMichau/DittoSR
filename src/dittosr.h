@@ -189,6 +189,9 @@ void ditto_request_reload();                      // (the menu: dittosr.ini read
 bool ditto_save_settings();                       // (the menu: written to dittosr.ini - only what differs from the defaults)
 // Applied over dittosr.ini's settings each time it is read (null: none) - OptiScaler's [Plugin.<name>], opti_plugin.cpp
 extern void (*g_settingsOverride)(DittoSettings &s);
+// The override's side of the menu's Save (null: none): s's value of key (dittosr.ini's name) put where the override
+// keeps it, when it holds that key - true: dittosr.ini's left alone; key null: what it took, written out
+extern bool (*g_settingsSave)(const DittoSettings &s, const char *key);
 
 // What the upscale shows the menu (written each upscale, read on the present thread: single values, no lock)
 struct DittoStats {
